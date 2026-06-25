@@ -6,6 +6,33 @@ import type { CreateOrderInput } from "@/lib/validations";
 
 export class OrderError extends Error {}
 
+/**
+ * Libera reservas vencidas de un evento (órdenes `pending` expiradas).
+ * Se ejecuta dentro de la transacción de compra para que la disponibilidad
+ * sea exacta en tiempo real, sin depender de un cron frecuente.
+ */
+async function releaseExpiredForEvent(
+  tx: Prisma.TransactionClient,
+  eventId: string,
+) {
+  const stale = await tx.sessionOrder.findMany({
+    where: { eventId, status: "pending", expiresAt: { lt: new Date() } },
+    include: { items: true },
+  });
+  for (const order of stale) {
+    for (const item of order.items) {
+      await tx.sessionTicketType.update({
+        where: { id: item.ticketTypeId },
+        data: { quantitySold: { decrement: item.quantity } },
+      });
+    }
+    await tx.sessionOrder.update({
+      where: { id: order.id },
+      data: { status: "expired" },
+    });
+  }
+}
+
 /** Genera un código de orden único, reintentando si hay colisión. */
 async function uniqueOrderCode(tx: Prisma.TransactionClient) {
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -23,6 +50,9 @@ async function uniqueOrderCode(tx: Prisma.TransactionClient) {
  */
 export async function createOrder(input: CreateOrderInput) {
   return db.$transaction(async (tx) => {
+    // Libera primero los cupos de reservas vencidas de este evento.
+    await releaseExpiredForEvent(tx, input.eventId);
+
     const event = await tx.sessionEvent.findUnique({
       where: { id: input.eventId },
       include: { ticketTypes: true },
