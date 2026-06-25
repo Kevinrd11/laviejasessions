@@ -20,7 +20,15 @@ import {
   SessionTicketSelector,
   type SelectableTicket,
 } from "@/components/sessions/ticket-selector";
-import { getEventBySlug, availableQuantity, isTicketTypeSoldOut } from "@/lib/sessions";
+import { EventAvailability } from "@/components/sessions/event-availability";
+import {
+  getEventBySlug,
+  availableQuantity,
+  isTicketTypeSoldOut,
+  isLockedBeforeStart,
+  eventLimitedInventory,
+  eventHasPurchasable,
+} from "@/lib/sessions";
 import { formatEventDate } from "@/lib/utils";
 import { whatsappEventMessage } from "@/config/brand";
 
@@ -50,17 +58,29 @@ export default async function EventPage({
   const event = await getEventBySlug(slug);
   if (!event) notFound();
 
-  const tickets: SelectableTicket[] = event.ticketTypes.map((t) => ({
-    id: t.id,
-    name: t.name,
-    description: t.description,
-    price: t.price,
-    available: availableQuantity(t),
-    maxPerOrder: t.maxPerOrder,
-    soldOut: isTicketTypeSoldOut(t),
-  }));
+  const now = new Date();
+  const tickets: SelectableTicket[] = event.ticketTypes.map((t) => {
+    const locked = isLockedBeforeStart(t, now);
+    const avail = t.unlimited ? 0 : availableQuantity(t);
+    return {
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      price: t.price,
+      maxPerOrder: t.maxPerOrder,
+      unlimited: t.unlimited,
+      available: avail,
+      soldOut: isTicketTypeSoldOut(t),
+      locked,
+      lockedUntilLabel: locked && t.salesStart ? formatEventDate(t.salesStart) : null,
+    };
+  });
 
-  const canSell = event.status === "published" && tickets.some((t) => !t.soldOut);
+  const inventory = eventLimitedInventory(event.ticketTypes);
+  const canSell =
+    event.status === "published" && eventHasPurchasable(event.ticketTypes, now);
+  // Hay tipos que abren más adelante (ej. entrada del día del evento).
+  const hasLockedTypes = event.ticketTypes.some((t) => isLockedBeforeStart(t, now));
   const waMessage = whatsappEventMessage(event.title);
 
   return (
@@ -184,7 +204,17 @@ export default async function EventPage({
         </div>
 
         {/* Columna de compra (sticky) */}
-        <aside className="lg:sticky lg:top-24 lg:h-fit">
+        <aside className="lg:sticky lg:top-24 lg:h-fit space-y-4">
+          {/* Contador público de inventario (entradas con tope, ej. Preventa) */}
+          {inventory.hasLimited && (
+            <EventAvailability
+              available={inventory.available}
+              total={inventory.totalCapacity}
+              percentSold={inventory.percentSold}
+              label="Preventa"
+            />
+          )}
+
           <div className="rounded-3xl glass-strong p-6">
             <h2 className="mb-4 font-display text-2xl font-bold">Entradas</h2>
             {canSell ? (
@@ -192,8 +222,10 @@ export default async function EventPage({
             ) : (
               <div className="space-y-4">
                 <p className="rounded-2xl bg-white/5 p-4 text-center text-muted">
-                  {event.status === "sold_out"
-                    ? "Entradas agotadas."
+                  {event.status === "sold_out" || inventory.available <= 0
+                    ? hasLockedTypes
+                      ? "Preventa agotada. Las entradas estarán disponibles el día del evento."
+                      : "Este evento ya agotó todas sus entradas disponibles."
                     : "Las entradas no están disponibles por ahora."}
                 </p>
               </div>

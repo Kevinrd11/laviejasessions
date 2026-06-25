@@ -2,11 +2,20 @@ import Image from "next/image";
 import Link from "next/link";
 import { Calendar, Clock, MapPin, ArrowRight } from "lucide-react";
 import { EventStatusBadge } from "@/components/ui/badge";
-import { priceFrom, type EventWithTickets } from "@/lib/sessions";
+import {
+  priceFrom,
+  eventLimitedInventory,
+  urgencyForAvailable,
+  type EventWithTickets,
+} from "@/lib/sessions";
 import { formatColones, formatEventDate } from "@/lib/utils";
 
 export function SessionEventCard({ event }: { event: EventWithTickets }) {
   const from = priceFrom(event.ticketTypes);
+  const inv = eventLimitedInventory(event.ticketTypes);
+  const urgency = inv.hasLimited ? urgencyForAvailable(inv.available) : null;
+  const showUrgency =
+    urgency && (urgency.level === "last" || urgency.level === "almost");
 
   return (
     <Link
@@ -55,6 +64,40 @@ export function SessionEventCard({ event }: { event: EventWithTickets }) {
             <span className="line-clamp-1">{event.location}</span>
           </p>
         </div>
+
+        {/* Indicador de disponibilidad (preventa con tope) */}
+        {inv.hasLimited && (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span
+                className={
+                  showUrgency
+                    ? urgency!.level === "almost"
+                      ? "font-semibold text-orange-300"
+                      : "font-semibold text-gold-soft"
+                    : "text-muted"
+                }
+              >
+                {inv.available > 0
+                  ? `Quedan ${inv.available} de ${inv.totalCapacity}`
+                  : "Preventa agotada"}
+              </span>
+              <span className="text-muted">{inv.percentSold}% vendido</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+              <div
+                className={`h-full rounded-full ${
+                  inv.available <= 0
+                    ? "bg-red-500"
+                    : showUrgency
+                      ? "bg-gradient-to-r from-orange-500 to-gold-soft"
+                      : "bg-gradient-to-r from-emerald to-emerald-soft"
+                }`}
+                style={{ width: `${Math.max(inv.percentSold, inv.available > 0 ? 4 : 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         <div className="mt-auto flex items-center justify-between pt-3">
           <div>

@@ -1,7 +1,7 @@
 /** Parámetros del flujo de órdenes. */
 
 /** Minutos que se reservan los cupos mientras se completa el pago. */
-export const RESERVATION_MINUTES = 10;
+export const RESERVATION_MINUTES = 15;
 
 /**
  * Comisión de servicio (opcional). 0 = sin comisión.

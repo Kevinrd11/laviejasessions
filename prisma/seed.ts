@@ -30,11 +30,23 @@ async function main() {
   });
   console.log(`👤 Admin listo: ${email}`);
 
-  // Limpieza idempotente de eventos demo
+  // Limpieza idempotente de eventos demo (borra órdenes dependientes primero).
   const demoSlugs = ["sunset-session-la-vieja", "night-session-bosque-vivo", "coffee-nature-session"];
-  await db.sessionEvent.deleteMany({ where: { slug: { in: demoSlugs } } });
+  const demoEvents = await db.sessionEvent.findMany({
+    where: { slug: { in: demoSlugs } },
+    select: { id: true },
+  });
+  const demoEventIds = demoEvents.map((e) => e.id);
+  if (demoEventIds.length > 0) {
+    // Las entradas/items/pagos caen en cascada al borrar la orden.
+    await db.sessionOrder.deleteMany({ where: { eventId: { in: demoEventIds } } });
+    await db.sessionEvent.deleteMany({ where: { id: { in: demoEventIds } } });
+  }
 
   // --- 1. Sunset Session en La Vieja ---
+  // Fecha del evento "por definirse": se usa un placeholder y la entrada del
+  // día se desbloquea automáticamente al llegar esta fecha.
+  const sunsetDate = daysFromNow(21);
   await db.sessionEvent.create({
     data: {
       title: "Sunset Session en La Vieja",
@@ -44,7 +56,7 @@ async function main() {
         "Una tarde especial entre montaña, música suave, café local y ambiente natural. Vení a despedir el día desde uno de los mejores miradores de Sucre, con una experiencia curada por La Vieja Adventures: sonido en vivo, gastronomía local y la energía del bosque al atardecer.",
       imageUrl:
         "https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=1600&auto=format&fit=crop",
-      date: daysFromNow(21),
+      date: sunsetDate,
       startTime: "16:00",
       endTime: "20:00",
       location: "Mirador La Vieja, Sucre, Ciudad Quesada",
@@ -69,26 +81,22 @@ async function main() {
         create: [
           {
             name: "Preventa",
-            description: "Precio especial por tiempo limitado.",
+            description: "Cupo limitado a 35 entradas. Precio especial por tiempo limitado.",
             price: 8000,
-            quantityTotal: 40,
+            quantityTotal: 35,
             maxPerOrder: 6,
+            unlimited: false,
             status: "active",
           },
           {
-            name: "General",
-            description: "Acceso completo al evento.",
-            price: 10000,
-            quantityTotal: 80,
+            name: "Entrada Día del Evento",
+            description: "Disponible únicamente el día del evento, sujeto a disponibilidad en puerta.",
+            price: 12000,
+            quantityTotal: 0,
             maxPerOrder: 8,
-            status: "active",
-          },
-          {
-            name: "VIP",
-            description: "Zona preferencial + bebida de cortesía.",
-            price: 15000,
-            quantityTotal: 20,
-            maxPerOrder: 4,
+            unlimited: true,
+            // Se habilita al llegar el día del evento (por definirse).
+            salesStart: sunsetDate,
             status: "active",
           },
         ],

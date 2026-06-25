@@ -71,11 +71,26 @@ export async function createOrder(input: CreateOrderInput) {
       total: number;
     }[] = [];
 
+    const now = new Date();
+
     for (const item of input.items) {
       const tt = event.ticketTypes.find((t) => t.id === item.ticketTypeId);
       if (!tt) throw new OrderError("Tipo de entrada inválido.");
       if (tt.status !== "active") {
         throw new OrderError(`"${tt.name}" no está disponible.`);
+      }
+      if (item.quantity < 1) {
+        throw new OrderError("La cantidad debe ser mayor a 0.");
+      }
+
+      // Ventana de venta: bloqueada antes de salesStart / cerrada tras salesEnd.
+      if (tt.salesStart && now.getTime() < tt.salesStart.getTime()) {
+        throw new OrderError(
+          `"${tt.name}" aún no está disponible. Se habilita el día del evento.`,
+        );
+      }
+      if (tt.salesEnd && now.getTime() > tt.salesEnd.getTime()) {
+        throw new OrderError(`La venta de "${tt.name}" ya cerró.`);
       }
       if (item.quantity > tt.maxPerOrder) {
         throw new OrderError(
@@ -83,19 +98,30 @@ export async function createOrder(input: CreateOrderInput) {
         );
       }
 
-      // Reserva atómica: solo incrementa si aún hay cupo suficiente.
-      const reserved = await tx.sessionTicketType.updateMany({
-        where: {
-          id: tt.id,
-          quantitySold: { lte: tt.quantityTotal - item.quantity },
-        },
-        data: { quantitySold: { increment: item.quantity } },
-      });
+      if (tt.unlimited) {
+        // Sin tope: solo se incrementa el contador de vendidas (no hay sobreventa posible).
+        await tx.sessionTicketType.update({
+          where: { id: tt.id },
+          data: { quantitySold: { increment: item.quantity } },
+        });
+      } else {
+        // Reserva atómica: solo incrementa si aún hay cupo suficiente (anti-sobreventa).
+        const reserved = await tx.sessionTicketType.updateMany({
+          where: {
+            id: tt.id,
+            quantitySold: { lte: tt.quantityTotal - item.quantity },
+          },
+          data: { quantitySold: { increment: item.quantity } },
+        });
 
-      if (reserved.count === 0) {
-        throw new OrderError(
-          `No hay suficientes cupos para "${tt.name}". Intenta con menos entradas.`,
-        );
+        if (reserved.count === 0) {
+          const remaining = Math.max(0, tt.quantityTotal - tt.quantitySold);
+          throw new OrderError(
+            remaining <= 0
+              ? `"${tt.name}" acaba de agotarse. Ya no hay entradas disponibles.`
+              : `Solo quedan ${remaining} entradas de "${tt.name}". La cantidad seleccionada supera las entradas disponibles.`,
+          );
+        }
       }
 
       const lineTotal = tt.price * item.quantity;

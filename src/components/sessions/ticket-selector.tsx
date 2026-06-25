@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { Minus, Plus, Ticket, Loader2, AlertCircle } from "lucide-react";
+import { Minus, Plus, Ticket, Loader2, AlertCircle, Lock } from "lucide-react";
 import { SessionOrderSummary } from "./order-summary";
 import { createOrderAction } from "@/app/sessions/actions";
 import { SERVICE_FEE_RATE } from "@/config/orders";
@@ -12,10 +12,18 @@ export type SelectableTicket = {
   name: string;
   description: string | null;
   price: number;
-  available: number;
   maxPerOrder: number;
+  unlimited: boolean;
+  available: number; // relevante solo para entradas con tope
   soldOut: boolean;
+  locked: boolean; // aún no abre la venta (ej. día del evento)
+  lockedUntilLabel: string | null;
 };
+
+function capFor(t: SelectableTicket) {
+  if (t.locked || t.soldOut) return 0;
+  return t.unlimited ? t.maxPerOrder : Math.min(t.maxPerOrder, t.available);
+}
 
 export function SessionTicketSelector({
   eventId,
@@ -43,7 +51,7 @@ export function SessionTicketSelector({
   const totalCount = lines.reduce((s, l) => s + l.quantity, 0);
 
   function setTicketQty(t: SelectableTicket, next: number) {
-    const cap = Math.min(t.maxPerOrder, t.available);
+    const cap = capFor(t);
     const clamped = Math.max(0, Math.min(next, cap));
     setQty((prev) => ({ ...prev, [t.id]: clamped }));
   }
@@ -71,19 +79,31 @@ export function SessionTicketSelector({
       <div className="space-y-3">
         {tickets.map((t) => {
           const current = qty[t.id] ?? 0;
-          const cap = Math.min(t.maxPerOrder, t.available);
+          const cap = capFor(t);
           return (
             <div
               key={t.id}
-              className="flex items-center justify-between gap-4 rounded-2xl glass p-4"
+              className={`flex items-center justify-between gap-4 rounded-2xl glass p-4 ${
+                t.locked ? "opacity-80" : ""
+              }`}
             >
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Ticket className="size-4 text-gold-soft" />
                   <h4 className="font-semibold">{t.name}</h4>
-                  {t.soldOut && (
+                  {t.locked && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-xs font-semibold text-muted">
+                      <Lock className="size-3" /> Día del evento
+                    </span>
+                  )}
+                  {!t.locked && t.soldOut && (
                     <span className="rounded-full bg-danger/15 px-2 py-0.5 text-xs font-semibold text-red-300">
                       Agotado
+                    </span>
+                  )}
+                  {!t.locked && !t.soldOut && t.unlimited && (
+                    <span className="rounded-full bg-emerald/15 px-2 py-0.5 text-xs font-semibold text-emerald-soft">
+                      Disponible
                     </span>
                   )}
                 </div>
@@ -93,14 +113,24 @@ export function SessionTicketSelector({
                 <p className="mt-1 font-display text-base font-bold text-gold-soft">
                   {formatColones(t.price)}
                 </p>
-                {!t.soldOut && t.available <= 10 && (
+                {t.locked && t.lockedUntilLabel && (
+                  <p className="mt-0.5 text-xs text-muted">
+                    Se habilita el día del evento ({t.lockedUntilLabel}).
+                  </p>
+                )}
+                {!t.locked && !t.soldOut && !t.unlimited && t.available <= 10 && (
                   <p className="mt-0.5 text-xs text-warning">
-                    ¡Últimos {t.available} cupos!
+                    {t.available <= 5 ? "¡Casi agotado!" : "¡Últimas entradas!"} Quedan{" "}
+                    {t.available}.
                   </p>
                 )}
               </div>
 
-              {t.soldOut ? (
+              {t.locked ? (
+                <span className="flex items-center gap-1 text-sm text-muted">
+                  <Lock className="size-4" />
+                </span>
+              ) : t.soldOut ? (
                 <span className="text-sm text-muted">—</span>
               ) : (
                 <div className="flex items-center gap-3">
@@ -156,7 +186,7 @@ export function SessionTicketSelector({
           )}
         </button>
         <p className="mt-3 text-center text-xs text-muted">
-          Reservamos tus cupos por 10 minutos mientras completas el pago.
+          Reservamos tus cupos por 15 minutos mientras completas el pago.
         </p>
       </div>
     </div>

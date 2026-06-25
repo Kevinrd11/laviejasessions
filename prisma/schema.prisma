@@ -110,9 +110,12 @@ model SessionTicketType {
   name          String
   description   String?
   price         Int // colones
-  quantityTotal Int
+  quantityTotal Int // capacidad (ignorado si unlimited = true)
   quantitySold  Int              @default(0)
   maxPerOrder   Int              @default(10)
+  unlimited     Boolean          @default(false) // sin tope de inventario (ej. entrada del día)
+  salesStart    DateTime? // las ventas abren a partir de esta fecha/hora (null = ya a la venta)
+  salesEnd      DateTime? // las ventas cierran en esta fecha/hora (null = sin cierre)
   status        TicketTypeStatus @default(active)
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
