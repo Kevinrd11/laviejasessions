@@ -25,12 +25,10 @@ enum EventStatus {
 }
 
 enum OrderStatus {
-  pending
-  paid
-  failed
-  expired
-  pending_review
-  cancelled
+  pending_payment // orden creada, esperando pago por SINPE (NO descuenta inventario)
+  paid // pago confirmado por el administrador (descuenta inventario)
+  cancelled // cancelada manualmente
+  expired // vencida o descartada
 }
 
 enum TicketStatus {
@@ -135,7 +133,7 @@ model SessionOrder {
   customerEmail    String
   customerPhone    String
   customerIdNumber String?
-  status           OrderStatus        @default(pending)
+  status           OrderStatus        @default(pending_payment)
   paymentMethod    PaymentMethod      @default(simulated)
   subtotal         Int                @default(0)
   serviceFee       Int                @default(0)

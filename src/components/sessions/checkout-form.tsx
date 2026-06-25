@@ -41,11 +41,9 @@ const methods: {
 export function SessionCheckoutForm({
   orderId,
   orderCode,
-  expired,
 }: {
   orderId: string;
   orderCode: string;
-  expired: boolean;
 }) {
   const [method, setMethod] = useState<Method>("sinpe");
   const [accept, setAccept] = useState(false);
@@ -81,7 +79,7 @@ export function SessionCheckoutForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       {/* Datos del comprador */}
-      <fieldset className="space-y-4" disabled={expired || pending}>
+      <fieldset className="space-y-4" disabled={pending}>
         <legend className="mb-2 font-display text-lg font-semibold">
           Tus datos
         </legend>
@@ -93,7 +91,7 @@ export function SessionCheckoutForm({
       </fieldset>
 
       {/* Método de pago */}
-      <fieldset className="space-y-3" disabled={expired || pending}>
+      <fieldset className="space-y-3" disabled={pending}>
         <legend className="mb-2 font-display text-lg font-semibold">
           Método de pago
         </legend>
@@ -188,7 +186,7 @@ export function SessionCheckoutForm({
           type="checkbox"
           checked={accept}
           onChange={(e) => setAccept(e.target.checked)}
-          disabled={expired || pending}
+          disabled={pending}
           className="mt-0.5 size-4 accent-emerald"
         />
         <span>
@@ -206,19 +204,20 @@ export function SessionCheckoutForm({
 
       <button
         type="submit"
-        disabled={expired || pending}
+        disabled={pending}
         className="btn-premium flex h-13 min-h-12 w-full items-center justify-center gap-2 rounded-full py-3.5 font-semibold text-white disabled:opacity-50"
       >
         {pending ? (
           <>
             <Loader2 className="size-5 animate-spin" /> Procesando…
           </>
-        ) : method === "sinpe" ? (
-          "Confirmar y enviar comprobante"
         ) : (
-          "Comprar entradas"
+          "Registrar solicitud"
         )}
       </button>
+      <p className="text-center text-xs text-muted">
+        Tus entradas se confirman únicamente después de validar el pago por SINPE.
+      </p>
     </form>
   );
 }

@@ -1,37 +1,10 @@
 import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma";
 import { generateTicketCode, generateOrderCode } from "@/lib/services/qr";
-import { RESERVATION_MINUTES, computeServiceFee } from "@/config/orders";
+import { ORDER_EXPIRY_HOURS, computeServiceFee } from "@/config/orders";
 import type { CreateOrderInput } from "@/lib/validations";
 
 export class OrderError extends Error {}
-
-/**
- * Libera reservas vencidas de un evento (órdenes `pending` expiradas).
- * Se ejecuta dentro de la transacción de compra para que la disponibilidad
- * sea exacta en tiempo real, sin depender de un cron frecuente.
- */
-async function releaseExpiredForEvent(
-  tx: Prisma.TransactionClient,
-  eventId: string,
-) {
-  const stale = await tx.sessionOrder.findMany({
-    where: { eventId, status: "pending", expiresAt: { lt: new Date() } },
-    include: { items: true },
-  });
-  for (const order of stale) {
-    for (const item of order.items) {
-      await tx.sessionTicketType.update({
-        where: { id: item.ticketTypeId },
-        data: { quantitySold: { decrement: item.quantity } },
-      });
-    }
-    await tx.sessionOrder.update({
-      where: { id: order.id },
-      data: { status: "expired" },
-    });
-  }
-}
 
 /** Genera un código de orden único, reintentando si hay colisión. */
 async function uniqueOrderCode(tx: Prisma.TransactionClient) {
@@ -44,15 +17,15 @@ async function uniqueOrderCode(tx: Prisma.TransactionClient) {
 }
 
 /**
- * Crea una orden `pending` reservando los cupos de forma atómica.
- * Usa una transacción + actualización condicional de `quantitySold`
- * para evitar sobreventa ante compras simultáneas.
+ * Crea una orden en estado `pending_payment`.
+ *
+ * IMPORTANTE: NO descuenta entradas del inventario. El conteo público solo
+ * considera órdenes `paid`. La validación de cupo aquí es solo para bloquear
+ * cuando el evento ya está agotado (entradas pagadas == capacidad). La
+ * verificación anti-sobreventa definitiva ocurre al confirmar el pago.
  */
 export async function createOrder(input: CreateOrderInput) {
   return db.$transaction(async (tx) => {
-    // Libera primero los cupos de reservas vencidas de este evento.
-    await releaseExpiredForEvent(tx, input.eventId);
-
     const event = await tx.sessionEvent.findUnique({
       where: { id: input.eventId },
       include: { ticketTypes: true },
@@ -98,28 +71,17 @@ export async function createOrder(input: CreateOrderInput) {
         );
       }
 
-      if (tt.unlimited) {
-        // Sin tope: solo se incrementa el contador de vendidas (no hay sobreventa posible).
-        await tx.sessionTicketType.update({
-          where: { id: tt.id },
-          data: { quantitySold: { increment: item.quantity } },
-        });
-      } else {
-        // Reserva atómica: solo incrementa si aún hay cupo suficiente (anti-sobreventa).
-        const reserved = await tx.sessionTicketType.updateMany({
-          where: {
-            id: tt.id,
-            quantitySold: { lte: tt.quantityTotal - item.quantity },
-          },
-          data: { quantitySold: { increment: item.quantity } },
-        });
-
-        if (reserved.count === 0) {
-          const remaining = Math.max(0, tt.quantityTotal - tt.quantitySold);
+      // Bloqueo por agotado: quantitySold refleja SOLO entradas pagadas.
+      if (!tt.unlimited) {
+        const remaining = tt.quantityTotal - tt.quantitySold;
+        if (remaining <= 0) {
           throw new OrderError(
-            remaining <= 0
-              ? `"${tt.name}" acaba de agotarse. Ya no hay entradas disponibles.`
-              : `Solo quedan ${remaining} entradas de "${tt.name}". La cantidad seleccionada supera las entradas disponibles.`,
+            `"${tt.name}" está agotada. Este evento ya no tiene entradas disponibles.`,
+          );
+        }
+        if (item.quantity > remaining) {
+          throw new OrderError(
+            `Solo quedan ${remaining} entradas de "${tt.name}". Reducí la cantidad.`,
           );
         }
       }
@@ -136,7 +98,8 @@ export async function createOrder(input: CreateOrderInput) {
 
     const serviceFee = computeServiceFee(subtotal);
     const total = subtotal + serviceFee;
-    const expiresAt = new Date(Date.now() + RESERVATION_MINUTES * 60 * 1000);
+    // Ventana de "limpieza": si nunca se paga, el cron la marca expired.
+    const expiresAt = new Date(Date.now() + ORDER_EXPIRY_HOURS * 60 * 60 * 1000);
     const code = await uniqueOrderCode(tx);
 
     const order = await tx.sessionOrder.create({
@@ -146,7 +109,7 @@ export async function createOrder(input: CreateOrderInput) {
         customerName: "",
         customerEmail: "",
         customerPhone: "",
-        status: "pending",
+        status: "pending_payment",
         subtotal,
         serviceFee,
         total,
@@ -155,15 +118,12 @@ export async function createOrder(input: CreateOrderInput) {
       },
     });
 
-    return { orderId: order.id, code: order.code, total, expiresAt };
+    return { orderId: order.id, code: order.code, total };
   });
 }
 
-/** Libera los cupos reservados de una orden (al expirar, fallar o cancelar). */
-async function releaseSeats(
-  tx: Prisma.TransactionClient,
-  orderId: string,
-) {
+/** Libera el inventario de una orden pagada (al cancelarla). */
+async function releasePaidSeats(tx: Prisma.TransactionClient, orderId: string) {
   const items = await tx.sessionOrderItem.findMany({ where: { orderId } });
   for (const item of items) {
     await tx.sessionTicketType.update({
@@ -174,70 +134,66 @@ async function releaseSeats(
 }
 
 /**
- * Expira las órdenes `pending` vencidas y libera sus cupos.
- * Lo invoca el cron. Devuelve cuántas órdenes se expiraron.
+ * Marca como `expired` las órdenes `pending_payment` viejas (limpieza).
+ * No toca inventario porque las pendientes nunca lo descontaron.
  */
 export async function expirePendingOrders() {
-  const expired = await db.sessionOrder.findMany({
-    where: { status: "pending", expiresAt: { lt: new Date() } },
-    select: { id: true },
+  const result = await db.sessionOrder.updateMany({
+    where: { status: "pending_payment", expiresAt: { lt: new Date() } },
+    data: { status: "expired" },
   });
-
-  for (const { id } of expired) {
-    await db.$transaction(async (tx) => {
-      const fresh = await tx.sessionOrder.findUnique({ where: { id } });
-      if (!fresh || fresh.status !== "pending") return;
-      await releaseSeats(tx, id);
-      await tx.sessionOrder.update({
-        where: { id },
-        data: { status: "expired" },
-      });
-    });
-  }
-
-  return expired.length;
-}
-
-/** Cancela una orden y libera cupos (uso admin o usuario que abandona). */
-export async function cancelOrder(orderId: string) {
-  return db.$transaction(async (tx) => {
-    const order = await tx.sessionOrder.findUnique({ where: { id: orderId } });
-    if (!order) throw new OrderError("Orden no encontrada.");
-    if (order.status === "paid") {
-      throw new OrderError("No se puede cancelar una orden ya pagada.");
-    }
-    if (["pending", "pending_review"].includes(order.status)) {
-      await releaseSeats(tx, orderId);
-    }
-    await tx.sessionOrder.update({
-      where: { id: orderId },
-      data: { status: "cancelled" },
-    });
-  });
+  return result.count;
 }
 
 /**
- * Marca una orden como pagada y genera las entradas (una por ticket).
- * Idempotente: si ya está pagada, no duplica entradas.
+ * CONFIRMACIÓN MANUAL DEL PAGO (acción del administrador).
+ *
+ * Valida de forma atómica que aún haya cupo, descuenta el inventario,
+ * genera las entradas con QR y deja la orden en `paid`.
+ * Es el ÚNICO punto donde el inventario disminuye.
  */
-export async function markOrderPaidAndIssueTickets(
+export async function confirmPayment(
   orderId: string,
   opts?: { paymentReference?: string },
 ) {
   return db.$transaction(async (tx) => {
     const order = await tx.sessionOrder.findUnique({
       where: { id: orderId },
-      include: { items: true, tickets: true },
+      include: { items: { include: { ticketType: true } }, tickets: true },
     });
     if (!order) throw new OrderError("Orden no encontrada.");
-    if (order.status === "paid" && order.tickets.length > 0) {
-      return order; // ya emitida
+    if (order.status === "paid") {
+      return order; // ya confirmada (idempotente)
     }
-    if (!["pending", "pending_review"].includes(order.status)) {
-      throw new OrderError("La orden no está en un estado pagable.");
+    if (order.status !== "pending_payment") {
+      throw new OrderError("Solo se pueden confirmar órdenes pendientes de pago.");
     }
 
-    // Generar una entrada por cada unidad comprada.
+    // Descuento atómico con verificación anti-sobreventa por tipo de entrada.
+    for (const item of order.items) {
+      const tt = item.ticketType;
+      if (tt.unlimited) {
+        await tx.sessionTicketType.update({
+          where: { id: tt.id },
+          data: { quantitySold: { increment: item.quantity } },
+        });
+        continue;
+      }
+      const updated = await tx.sessionTicketType.updateMany({
+        where: {
+          id: tt.id,
+          quantitySold: { lte: tt.quantityTotal - item.quantity },
+        },
+        data: { quantitySold: { increment: item.quantity } },
+      });
+      if (updated.count === 0) {
+        throw new OrderError(
+          "No se puede confirmar esta orden porque no quedan suficientes entradas para el evento.",
+        );
+      }
+    }
+
+    // Emitir una entrada (con QR único) por cada unidad comprada.
     for (const item of order.items) {
       for (let i = 0; i < item.quantity; i++) {
         await tx.sessionTicket.create({
@@ -260,6 +216,31 @@ export async function markOrderPaidAndIssueTickets(
         paymentReference: opts?.paymentReference ?? order.paymentReference,
         expiresAt: null,
       },
+    });
+  });
+}
+
+/**
+ * Cancela una orden. Si estaba pagada, libera el inventario y cancela sus
+ * entradas. Si estaba pendiente, solo cambia el estado (no había inventario).
+ */
+export async function cancelOrder(orderId: string) {
+  return db.$transaction(async (tx) => {
+    const order = await tx.sessionOrder.findUnique({ where: { id: orderId } });
+    if (!order) throw new OrderError("Orden no encontrada.");
+    if (order.status === "cancelled") return order;
+
+    if (order.status === "paid") {
+      await releasePaidSeats(tx, orderId);
+      await tx.sessionTicket.updateMany({
+        where: { orderId },
+        data: { status: "cancelled" },
+      });
+    }
+
+    return tx.sessionOrder.update({
+      where: { id: orderId },
+      data: { status: "cancelled" },
     });
   });
 }

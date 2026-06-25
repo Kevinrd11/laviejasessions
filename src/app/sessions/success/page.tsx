@@ -29,21 +29,48 @@ export default async function SuccessPage({
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
   const shareUrl = `${siteUrl}/sessions/${order.event.slug}`;
 
-  // --- Pago en revisión (SINPE manual / pasarela pendiente) ---
-  if (order.status === "pending_review") {
+  // --- Cancelada o vencida ---
+  if (order.status === "cancelled" || order.status === "expired") {
+    return (
+      <Container className="flex min-h-[70vh] flex-col items-center justify-center py-16 text-center">
+        <span className="flex size-16 items-center justify-center rounded-full bg-white/10 text-muted">
+          <Clock3 className="size-8" />
+        </span>
+        <h1 className="mt-6 font-display text-3xl font-bold sm:text-4xl">
+          {order.status === "cancelled" ? "Orden cancelada" : "Solicitud vencida"}
+        </h1>
+        <p className="mt-3 max-w-lg text-muted">
+          Esta solicitud ya no está activa. Si aún querés tus entradas, podés
+          iniciar una nueva desde el evento.
+        </p>
+        <Link
+          href={`/sessions/${order.event.slug}`}
+          className="btn-premium mt-6 inline-flex h-11 items-center rounded-full px-6 font-semibold text-white"
+        >
+          Volver al evento
+        </Link>
+      </Container>
+    );
+  }
+
+  // --- Pendiente de pago (solicitud registrada, esperando validación) ---
+  if (order.status === "pending_payment") {
+    // Si todavía no completó el formulario, llevarlo al checkout.
+    if (!order.customerEmail) {
+      redirect(`/sessions/checkout?order=${order.id}`);
+    }
     return (
       <Container className="flex min-h-[70vh] flex-col items-center justify-center py-16 text-center">
         <span className="flex size-16 items-center justify-center rounded-full bg-warning/15 text-warning">
           <Clock3 className="size-8" />
         </span>
         <h1 className="mt-6 font-display text-3xl font-bold sm:text-4xl">
-          Pago en revisión
+          ¡Solicitud registrada!
         </h1>
-        <p className="mt-3 max-w-lg text-muted">
-          Recibimos tu orden para{" "}
-          <strong className="text-foreground">{order.event.title}</strong>.
-          Estamos verificando tu pago por SINPE. Apenas lo confirmemos, te
-          enviaremos tus entradas con código QR.
+        <p className="mt-3 max-w-xl text-muted">
+          Tu solicitud fue registrada. Para confirmar tus entradas, realizá el
+          pago por SINPE y enviá el comprobante por WhatsApp. Tus entradas serán
+          confirmadas únicamente después de validar el pago.
         </p>
 
         <div className="mt-6 rounded-2xl border border-emerald/30 bg-emerald/10 px-6 py-4">
@@ -54,7 +81,7 @@ export default async function SuccessPage({
             {order.code}
           </p>
           <p className="mt-1 text-xs text-muted">
-            Debe aparecer en la descripción de tu comprobante SINPE.
+            Escribilo en la descripción de tu comprobante SINPE.
           </p>
         </div>
 
@@ -74,11 +101,6 @@ export default async function SuccessPage({
         </Link>
       </Container>
     );
-  }
-
-  // --- Pendiente / expirada: volver al checkout ---
-  if (order.status !== "paid") {
-    redirect(`/sessions/checkout?order=${order.id}`);
   }
 
   // --- Pagada: mostrar entradas con QR ---
