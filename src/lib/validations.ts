@@ -23,6 +23,7 @@ export const checkoutSchema = z.object({
     .regex(/^[0-9+\-\s()]+$/, "Número de WhatsApp inválido"),
   customerIdNumber: z.string().max(30).optional().or(z.literal("")),
   paymentMethod: z.enum(["simulated", "sinpe", "card", "link"]),
+  courtesyCode: z.string().max(40).optional(),
   acceptTerms: z.literal(true, {
     message: "Debes aceptar los términos",
   }),

@@ -7,8 +7,10 @@ import {
   LogOut,
   ExternalLink,
 } from "lucide-react";
+import { Gift } from "lucide-react";
 import { Container } from "@/components/ui/container";
 import { OrdersTable } from "@/components/admin/orders-table";
+import { CourtesyCodes } from "@/components/admin/courtesy-codes";
 import { requireAdmin } from "@/lib/auth";
 import { getAdminDashboard } from "@/lib/admin";
 import { logoutAction } from "@/app/admin/actions";
@@ -53,11 +55,12 @@ export default async function AdminSessionsPage() {
             </div>
 
             {/* Métricas */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
               <Stat icon={Users} label="Capacidad (preventa)" value={ev.capacity} tone="text-foreground" />
               <Stat icon={CircleCheck} label="Pagadas" value={ev.paidQty} tone="text-emerald-soft" />
+              <Stat icon={Gift} label="Cortesías aprob." value={ev.courtesyApprovedQty} tone="text-gold-soft" />
               <Stat icon={Ticket} label="Disponibles" value={ev.available} tone="text-gold-soft" />
-              <Stat icon={Clock3} label="Órdenes por revisar" value={ev.pendingOrders} tone="text-warning" />
+              <Stat icon={Clock3} label="Por revisar" value={ev.pendingOrders + ev.pendingCourtesy} tone="text-warning" />
             </div>
 
             {/* Barra de progreso */}
@@ -69,8 +72,8 @@ export default async function AdminSessionsPage() {
                 />
               </div>
               <p className="mt-1.5 text-xs text-muted">
-                {ev.percentSold}% vendido (pagadas) · {ev.pendingQty} entrada(s) en
-                solicitudes pendientes
+                {ev.percentSold}% ocupado (pagadas + cortesías) ·{" "}
+                {ev.pendingOrders} pago(s) y {ev.pendingCourtesy} cortesía(s) por revisar
               </p>
             </div>
 
@@ -79,6 +82,16 @@ export default async function AdminSessionsPage() {
               <h3 className="mb-3 font-display text-lg font-semibold">Órdenes</h3>
               <OrdersTable orders={ev.orders} />
             </div>
+
+            {/* Códigos de cortesía */}
+            {ev.codes.length > 0 && (
+              <div className="mt-8">
+                <h3 className="mb-3 flex items-center gap-2 font-display text-lg font-semibold">
+                  <Gift className="size-5 text-gold-soft" /> Códigos de cortesía
+                </h3>
+                <CourtesyCodes codes={ev.codes} />
+              </div>
+            )}
           </section>
         ))}
       </div>

@@ -2,9 +2,61 @@ import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma";
 import { generateTicketCode, generateOrderCode } from "@/lib/services/qr";
 import { ORDER_EXPIRY_HOURS, computeServiceFee } from "@/config/orders";
+import {
+  reserveCourtesyCode,
+  releaseCourtesyReservation,
+  consumeCourtesyCode,
+} from "@/lib/services/courtesy";
 import type { CreateOrderInput } from "@/lib/validations";
 
 export class OrderError extends Error {}
+
+/** Emite una entrada con QR único por cada unidad de la orden. */
+async function issueTickets(
+  tx: Prisma.TransactionClient,
+  order: { id: string; eventId: string; customerName: string },
+  items: { ticketTypeId: string; quantity: number }[],
+) {
+  for (const item of items) {
+    for (let i = 0; i < item.quantity; i++) {
+      await tx.sessionTicket.create({
+        data: {
+          orderId: order.id,
+          eventId: order.eventId,
+          ticketTypeId: item.ticketTypeId,
+          qrCode: generateTicketCode(),
+          attendeeName: order.customerName,
+          status: "valid",
+        },
+      });
+    }
+  }
+}
+
+/** Descuenta inventario de forma atómica (anti-sobreventa). Lanza si no hay cupo. */
+async function decrementInventory(
+  tx: Prisma.TransactionClient,
+  items: { ticketTypeId: string; quantity: number; ticketType: { unlimited: boolean; quantityTotal: number } }[],
+  soldOutMessage: string,
+) {
+  for (const item of items) {
+    if (item.ticketType.unlimited) {
+      await tx.sessionTicketType.update({
+        where: { id: item.ticketTypeId },
+        data: { quantitySold: { increment: item.quantity } },
+      });
+      continue;
+    }
+    const updated = await tx.sessionTicketType.updateMany({
+      where: {
+        id: item.ticketTypeId,
+        quantitySold: { lte: item.ticketType.quantityTotal - item.quantity },
+      },
+      data: { quantitySold: { increment: item.quantity } },
+    });
+    if (updated.count === 0) throw new OrderError(soldOutMessage);
+  }
+}
 
 /** Genera un código de orden único, reintentando si hay colisión. */
 async function uniqueOrderCode(tx: Prisma.TransactionClient) {
@@ -134,15 +186,31 @@ async function releasePaidSeats(tx: Prisma.TransactionClient, orderId: string) {
 }
 
 /**
- * Marca como `expired` las órdenes `pending_payment` viejas (limpieza).
- * No toca inventario porque las pendientes nunca lo descontaron.
+ * Marca como `expired` las órdenes pendientes viejas (limpieza). No toca el
+ * inventario (las pendientes nunca lo descontaron), pero libera las reservas
+ * de códigos de cortesía.
  */
 export async function expirePendingOrders() {
-  const result = await db.sessionOrder.updateMany({
-    where: { status: "pending_payment", expiresAt: { lt: new Date() } },
-    data: { status: "expired" },
+  const stale = await db.sessionOrder.findMany({
+    where: {
+      status: { in: ["pending_payment", "pending_courtesy"] },
+      expiresAt: { lt: new Date() },
+    },
+    select: { id: true, status: true, discountCodeId: true },
   });
-  return result.count;
+
+  for (const o of stale) {
+    await db.$transaction(async (tx) => {
+      if (o.status === "pending_courtesy" && o.discountCodeId) {
+        await releaseCourtesyReservation(tx, o.discountCodeId);
+      }
+      await tx.sessionOrder.update({
+        where: { id: o.id },
+        data: { status: "expired" },
+      });
+    });
+  }
+  return stale.length;
 }
 
 /**
@@ -169,45 +237,12 @@ export async function confirmPayment(
       throw new OrderError("Solo se pueden confirmar órdenes pendientes de pago.");
     }
 
-    // Descuento atómico con verificación anti-sobreventa por tipo de entrada.
-    for (const item of order.items) {
-      const tt = item.ticketType;
-      if (tt.unlimited) {
-        await tx.sessionTicketType.update({
-          where: { id: tt.id },
-          data: { quantitySold: { increment: item.quantity } },
-        });
-        continue;
-      }
-      const updated = await tx.sessionTicketType.updateMany({
-        where: {
-          id: tt.id,
-          quantitySold: { lte: tt.quantityTotal - item.quantity },
-        },
-        data: { quantitySold: { increment: item.quantity } },
-      });
-      if (updated.count === 0) {
-        throw new OrderError(
-          "No se puede confirmar esta orden porque no quedan suficientes entradas para el evento.",
-        );
-      }
-    }
-
-    // Emitir una entrada (con QR único) por cada unidad comprada.
-    for (const item of order.items) {
-      for (let i = 0; i < item.quantity; i++) {
-        await tx.sessionTicket.create({
-          data: {
-            orderId: order.id,
-            eventId: order.eventId,
-            ticketTypeId: item.ticketTypeId,
-            qrCode: generateTicketCode(),
-            attendeeName: order.customerName,
-            status: "valid",
-          },
-        });
-      }
-    }
+    await decrementInventory(
+      tx,
+      order.items,
+      "No se puede confirmar esta orden porque no quedan suficientes entradas para el evento.",
+    );
+    await issueTickets(tx, order, order.items);
 
     return tx.sessionOrder.update({
       where: { id: order.id },
@@ -221,8 +256,11 @@ export async function confirmPayment(
 }
 
 /**
- * Cancela una orden. Si estaba pagada, libera el inventario y cancela sus
- * entradas. Si estaba pendiente, solo cambia el estado (no había inventario).
+ * Cancela una orden.
+ * - paid / courtesy_approved: libera inventario y cancela las entradas.
+ * - courtesy_approved: además restituye el código de cortesía (queda usable).
+ * - pending_courtesy: libera la reserva del código.
+ * - pending_payment: solo cambia el estado (no había inventario).
  */
 export async function cancelOrder(orderId: string) {
   return db.$transaction(async (tx) => {
@@ -230,7 +268,7 @@ export async function cancelOrder(orderId: string) {
     if (!order) throw new OrderError("Orden no encontrada.");
     if (order.status === "cancelled") return order;
 
-    if (order.status === "paid") {
+    if (order.status === "paid" || order.status === "courtesy_approved") {
       await releasePaidSeats(tx, orderId);
       await tx.sessionTicket.updateMany({
         where: { orderId },
@@ -238,6 +276,118 @@ export async function cancelOrder(orderId: string) {
       });
     }
 
+    if (order.discountCodeId) {
+      if (order.status === "pending_courtesy") {
+        await releaseCourtesyReservation(tx, order.discountCodeId);
+      } else if (order.status === "courtesy_approved") {
+        // Restituir el uso del código para que pueda volver a usarse.
+        await tx.discountCode.updateMany({
+          where: { id: order.discountCodeId, usedCount: { gt: 0 } },
+          data: { usedCount: { decrement: 1 } },
+        });
+      }
+    }
+
+    return tx.sessionOrder.update({
+      where: { id: orderId },
+      data: { status: "cancelled" },
+    });
+  });
+}
+
+/**
+ * Aplica un código de cortesía a una orden existente (al finalizar el checkout).
+ * Reserva el código de forma atómica y deja la orden en `pending_courtesy`
+ * con total ₡0. NO descuenta inventario (eso ocurre al aprobar).
+ * Requiere que la orden sea de exactamente 1 entrada.
+ */
+export async function applyCourtesyToOrder(orderId: string, rawCode: string) {
+  return db.$transaction(async (tx) => {
+    const order = await tx.sessionOrder.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order) throw new OrderError("Orden no encontrada.");
+    if (order.status !== "pending_payment") {
+      throw new OrderError("Esta solicitud ya fue procesada.");
+    }
+    const qty = order.items.reduce((s, i) => s + i.quantity, 0);
+    if (qty !== 1) {
+      throw new OrderError("El código de cortesía aplica solo para 1 entrada.");
+    }
+
+    let code;
+    try {
+      code = await reserveCourtesyCode(tx, rawCode, order.eventId);
+    } catch (e) {
+      throw new OrderError(e instanceof Error ? e.message : "Código inválido.");
+    }
+
+    return tx.sessionOrder.update({
+      where: { id: order.id },
+      data: {
+        status: "pending_courtesy",
+        discountCodeId: code.id,
+        discountTotal: order.subtotal,
+        total: 0,
+        expiresAt: new Date(Date.now() + ORDER_EXPIRY_HOURS * 60 * 60 * 1000),
+      },
+    });
+  });
+}
+
+/**
+ * APROBAR CORTESÍA (admin). Valida cupo, descuenta inventario, marca el
+ * código como usado y emite las entradas con QR. Deja `courtesy_approved`.
+ */
+export async function approveCourtesyOrder(orderId: string) {
+  return db.$transaction(async (tx) => {
+    const order = await tx.sessionOrder.findUnique({
+      where: { id: orderId },
+      include: { items: { include: { ticketType: true } }, tickets: true },
+    });
+    if (!order) throw new OrderError("Orden no encontrada.");
+    if (order.status === "courtesy_approved") return order; // idempotente
+    if (order.status !== "pending_courtesy") {
+      throw new OrderError("Esta orden no es una cortesía pendiente.");
+    }
+
+    await decrementInventory(
+      tx,
+      order.items,
+      "No se puede aprobar esta cortesía porque el evento ya está agotado.",
+    );
+
+    if (order.discountCodeId) {
+      await consumeCourtesyCode(tx, order.discountCodeId, {
+        name: order.customerName,
+        phone: order.customerPhone,
+      });
+    }
+
+    await issueTickets(tx, order, order.items);
+
+    return tx.sessionOrder.update({
+      where: { id: order.id },
+      data: { status: "courtesy_approved", expiresAt: null },
+    });
+  });
+}
+
+/**
+ * RECHAZAR CORTESÍA (admin). Cancela la orden y libera el código para que
+ * pueda volver a usarse. No descuenta inventario.
+ */
+export async function rejectCourtesyOrder(orderId: string) {
+  return db.$transaction(async (tx) => {
+    const order = await tx.sessionOrder.findUnique({ where: { id: orderId } });
+    if (!order) throw new OrderError("Orden no encontrada.");
+    if (order.status !== "pending_courtesy") {
+      throw new OrderError("Esta orden no es una cortesía pendiente.");
+    }
+    if (order.discountCodeId) {
+      await releaseCourtesyReservation(tx, order.discountCodeId);
+    }
     return tx.sessionOrder.update({
       where: { id: orderId },
       data: { status: "cancelled" },

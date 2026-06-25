@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { eventLimitedInventory } from "@/lib/sessions";
+import { courtesyCodeState } from "@/lib/services/courtesy";
 
 /** Datos agregados para el panel administrativo. */
 export async function getAdminDashboard() {
@@ -7,6 +8,7 @@ export async function getAdminDashboard() {
     orderBy: [{ featured: "desc" }, { date: "asc" }],
     include: {
       ticketTypes: true,
+      discountCodes: { orderBy: { code: "asc" } },
       orders: {
         orderBy: { createdAt: "desc" },
         include: { items: { include: { ticketType: true } } },
@@ -22,11 +24,7 @@ export async function getAdminDashboard() {
         .filter((o) => o.status === status)
         .reduce((s, o) => s + o.items.reduce((a, i) => a + i.quantity, 0), 0);
 
-    const paidQty = qtyOf("paid");
-    const pendingQty = qtyOf("pending_payment");
-    const pendingOrders = event.orders.filter(
-      (o) => o.status === "pending_payment",
-    ).length;
+    const codeById = new Map(event.discountCodes.map((c) => [c.id, c.code]));
 
     const orders = event.orders.map((o) => ({
       id: o.id,
@@ -41,24 +39,49 @@ export async function getAdminDashboard() {
         .join(", "),
       total: o.total,
       status: o.status,
+      courtesyCode: o.discountCodeId ? codeById.get(o.discountCodeId) ?? null : null,
       createdAt: o.createdAt.toISOString(),
     }));
+
+    // Para cada código: orden/cliente asociado y fecha de uso (orden aprobada).
+    const codes = event.discountCodes.map((c) => {
+      const related = event.orders.find(
+        (o) =>
+          o.discountCodeId === c.id &&
+          (o.status === "pending_courtesy" || o.status === "courtesy_approved"),
+      );
+      const approved = event.orders.find(
+        (o) => o.discountCodeId === c.id && o.status === "courtesy_approved",
+      );
+      return {
+        id: c.id,
+        code: c.code,
+        state: courtesyCodeState(c),
+        isActive: c.isActive,
+        assignedToName: c.assignedToName ?? related?.customerName ?? null,
+        orderCode: related?.code ?? null,
+        usedAt: approved ? approved.createdAt.toISOString() : null,
+      };
+    });
 
     return {
       id: event.id,
       title: event.title,
       slug: event.slug,
       status: event.status,
-      capacity: inv.totalCapacity, // capacidad con tope (ej. preventa 35)
+      capacity: inv.totalCapacity,
       available: inv.available,
       percentSold: inv.percentSold,
-      paidQty,
-      pendingQty,
-      pendingOrders,
+      paidQty: qtyOf("paid"),
+      courtesyApprovedQty: qtyOf("courtesy_approved"),
+      pendingOrders: event.orders.filter((o) => o.status === "pending_payment").length,
+      pendingCourtesy: event.orders.filter((o) => o.status === "pending_courtesy").length,
       orders,
+      codes,
     };
   });
 }
 
 export type AdminEvent = Awaited<ReturnType<typeof getAdminDashboard>>[number];
 export type AdminOrder = AdminEvent["orders"][number];
+export type AdminCode = AdminEvent["codes"][number];

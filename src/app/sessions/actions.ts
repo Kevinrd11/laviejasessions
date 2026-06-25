@@ -2,7 +2,13 @@
 
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { createOrder, getOrderFull, OrderError } from "@/lib/services/orders";
+import {
+  createOrder,
+  getOrderFull,
+  applyCourtesyToOrder,
+  OrderError,
+} from "@/lib/services/orders";
+import { validateCourtesyCode } from "@/lib/services/courtesy";
 import { createOrderSchema, checkoutSchema } from "@/lib/validations";
 
 export type ActionState = { error?: string };
@@ -27,10 +33,36 @@ export async function createOrderAction(input: unknown): Promise<ActionState> {
   redirect(`/sessions/checkout?order=${orderId}`);
 }
 
+export type CourtesyPreview =
+  | { ok: true; original: number; discount: number; total: number }
+  | { ok: false; error: string };
+
+/** Valida un código de cortesía para previsualizar el descuento (no reserva). */
+export async function applyCourtesyAction(input: {
+  orderId: string;
+  code: string;
+}): Promise<CourtesyPreview> {
+  const order = await getOrderFull(input.orderId);
+  if (!order) return { ok: false, error: "Orden no encontrada." };
+  if (order.status !== "pending_payment") {
+    return { ok: false, error: "Esta solicitud ya fue procesada." };
+  }
+  const qty = order.items.reduce((s, i) => s + i.quantity, 0);
+  if (qty !== 1) {
+    return { ok: false, error: "El código de cortesía aplica solo para 1 entrada." };
+  }
+
+  const res = await validateCourtesyCode(input.code, order.eventId);
+  if (!res.ok) return { ok: false, error: res.error };
+
+  return { ok: true, original: order.subtotal, discount: order.subtotal, total: 0 };
+}
+
 /**
  * Guarda los datos del comprador y registra la solicitud.
- * NO procesa pago ni descuenta inventario: la orden queda en `pending_payment`
- * hasta que el administrador confirme el pago por SINPE manualmente.
+ * - Con código de cortesía válido: orden `pending_courtesy`, total ₡0.
+ * - Sin código: orden `pending_payment` (pago por SINPE manual).
+ * En ambos casos NO se descuenta inventario (eso ocurre al aprobar/confirmar).
  */
 export async function confirmCheckoutAction(input: unknown): Promise<ActionState> {
   const parsed = checkoutSchema.safeParse(input);
@@ -56,16 +88,28 @@ export async function confirmCheckoutAction(input: unknown): Promise<ActionState
     },
   });
 
-  // Registrar el intento de pago por SINPE (queda pendiente de validación manual).
-  await db.sessionPayment.create({
-    data: {
-      orderId: order.id,
-      provider: "sinpe",
-      status: "pending",
-      amount: order.total,
-      currency: "CRC",
-    },
-  });
+  const courtesy = (data.courtesyCode ?? "").trim();
+  if (courtesy) {
+    // Aplicar cortesía: reserva el código y deja la orden en pending_courtesy.
+    try {
+      await applyCourtesyToOrder(order.id, courtesy);
+    } catch (e) {
+      if (e instanceof OrderError) return { error: e.message };
+      console.error("applyCourtesy error", e);
+      return { error: "No se pudo aplicar el código de cortesía." };
+    }
+  } else {
+    // Registrar intento de pago por SINPE (pendiente de validación manual).
+    await db.sessionPayment.create({
+      data: {
+        orderId: order.id,
+        provider: "sinpe",
+        status: "pending",
+        amount: order.total,
+        currency: "CRC",
+      },
+    });
+  }
 
   redirect(`/sessions/success?order=${order.id}`);
 }

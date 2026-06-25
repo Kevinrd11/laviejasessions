@@ -47,7 +47,7 @@ async function main() {
   // Fecha del evento "por definirse": se usa un placeholder y la entrada del
   // día se desbloquea automáticamente al llegar esta fecha.
   const sunsetDate = daysFromNow(21);
-  await db.sessionEvent.create({
+  const sunset = await db.sessionEvent.create({
     data: {
       title: "Sunset Session en La Vieja",
       slug: "sunset-session-la-vieja",
@@ -103,6 +103,19 @@ async function main() {
       },
     },
   });
+
+  // 10 códigos de cortesía para el Sunset (1 entrada gratis, 1 solo uso c/u).
+  await db.discountCode.createMany({
+    data: Array.from({ length: 10 }, (_, i) => ({
+      code: `CORTESIA-${String(i + 1).padStart(3, "0")}`,
+      eventId: sunset.id,
+      type: "courtesy",
+      value: 100,
+      maxUses: 1,
+      isActive: true,
+    })),
+  });
+  console.log("🎟️  10 códigos de cortesía creados (CORTESIA-001..010).");
 
   // --- 2. Night Session Bosque Vivo ---
   await db.sessionEvent.create({

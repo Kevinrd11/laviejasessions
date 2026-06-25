@@ -26,7 +26,9 @@ enum EventStatus {
 
 enum OrderStatus {
   pending_payment // orden creada, esperando pago por SINPE (NO descuenta inventario)
+  pending_courtesy // cortesía pendiente de aprobación del admin (NO descuenta)
   paid // pago confirmado por el administrador (descuenta inventario)
+  courtesy_approved // cortesía aprobada por el admin (descuenta inventario)
   cancelled // cancelada manualmente
   expired // vencida o descartada
 }
@@ -93,9 +95,10 @@ model SessionEvent {
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
 
-  ticketTypes  SessionTicketType[]
-  orders       SessionOrder[]
-  tickets      SessionTicket[]
+  ticketTypes   SessionTicketType[]
+  orders        SessionOrder[]
+  tickets       SessionTicket[]
+  discountCodes DiscountCode[]
 
   @@index([status])
   @@index([slug])
@@ -137,10 +140,13 @@ model SessionOrder {
   paymentMethod    PaymentMethod      @default(simulated)
   subtotal         Int                @default(0)
   serviceFee       Int                @default(0)
+  discountTotal    Int                @default(0) // monto descontado por cortesía
   total            Int                @default(0)
   paymentReference String?
   proofImageUrl    String? // comprobante SINPE
-  expiresAt        DateTime? // reserva temporal (10 min)
+  discountCodeId   String? // código de cortesía aplicado
+  discountCode     DiscountCode?      @relation(fields: [discountCodeId], references: [id])
+  expiresAt        DateTime? // ventana de limpieza
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
@@ -151,6 +157,28 @@ model SessionOrder {
   @@index([eventId])
   @@index([status])
   @@index([expiresAt])
+  @@index([discountCodeId])
+}
+
+model DiscountCode {
+  id             String       @id @default(cuid())
+  code           String       @unique // ej. CORTESIA-001 (normalizado en mayúsculas)
+  eventId        String
+  event          SessionEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  type           String       @default("courtesy")
+  value          Int          @default(100) // porcentaje de descuento (100 = gratis)
+  maxUses        Int          @default(1)
+  usedCount      Int          @default(0)
+  reservedCount  Int          @default(0)
+  isActive       Boolean      @default(true)
+  assignedToName  String?
+  assignedToPhone String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  orders         SessionOrder[]
+
+  @@index([eventId])
 }
 
 model SessionOrderItem {

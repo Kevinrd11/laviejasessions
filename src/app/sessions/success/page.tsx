@@ -103,7 +103,53 @@ export default async function SuccessPage({
     );
   }
 
-  // --- Pagada: mostrar entradas con QR ---
+  // --- Cortesía pendiente de aprobación ---
+  if (order.status === "pending_courtesy") {
+    if (!order.customerEmail) {
+      redirect(`/sessions/checkout?order=${order.id}`);
+    }
+    return (
+      <Container className="flex min-h-[70vh] flex-col items-center justify-center py-16 text-center">
+        <span className="flex size-16 items-center justify-center rounded-full bg-gold/15 text-gold-soft">
+          <Clock3 className="size-8" />
+        </span>
+        <h1 className="mt-6 font-display text-3xl font-bold sm:text-4xl">
+          ¡Cortesía registrada!
+        </h1>
+        <p className="mt-3 max-w-xl text-muted">
+          Tu entrada de cortesía fue registrada. La organización validará tu
+          cortesía y confirmará tu entrada.
+        </p>
+
+        <div className="mt-6 rounded-2xl border border-gold/30 bg-gold/10 px-6 py-4">
+          <p className="text-xs uppercase tracking-wide text-muted">
+            Código de tu orden
+          </p>
+          <p className="font-mono text-2xl font-bold tracking-widest text-gold-soft">
+            {order.code}
+          </p>
+        </div>
+
+        <div className="mt-8">
+          <WhatsAppButton
+            message={`${whatsappEventMessage(order.event.title)} Registré una entrada de cortesía. Código de orden: ${order.code}.`}
+            label="Confirmar por WhatsApp"
+            variant="premium"
+            size="lg"
+          />
+        </div>
+        <Link
+          href="/sessions"
+          className="mt-6 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"
+        >
+          <ArrowLeft className="size-4" /> Volver a Sessions
+        </Link>
+      </Container>
+    );
+  }
+
+  // --- Pagada o cortesía aprobada: mostrar entradas con QR ---
+  const isCourtesyApproved = order.status === "courtesy_approved";
   const tickets: SuccessTicketData[] = await Promise.all(
     order.tickets.map(async (t, i) => ({
       code: t.qrCode,
@@ -128,7 +174,9 @@ export default async function SuccessPage({
           <CheckCircle2 className="size-9" />
         </span>
         <h1 className="mt-6 font-display text-3xl font-bold sm:text-4xl">
-          ¡Tu compra está confirmada!
+          {isCourtesyApproved
+            ? "¡Tu cortesía está confirmada!"
+            : "¡Tu compra está confirmada!"}
         </h1>
         <p className="mt-3 text-muted">
           {order.tickets.length}{" "}
