@@ -1,0 +1,213 @@
+// La Vieja Sessions — esquema de datos
+// Precios en enteros de colones (CRC) para evitar errores de coma flotante.
+
+generator client {
+  provider      = "prisma-client-js"
+  output        = "../src/generated/prisma"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum EventStatus {
+  draft
+  published
+  sold_out
+  cancelled
+  finished
+}
+
+enum OrderStatus {
+  pending
+  paid
+  failed
+  expired
+  pending_review
+  cancelled
+}
+
+enum TicketStatus {
+  valid
+  used
+  cancelled
+}
+
+enum TicketTypeStatus {
+  active
+  sold_out
+  hidden
+}
+
+enum AdminRole {
+  owner
+  admin
+  scanner
+}
+
+enum PaymentMethod {
+  simulated
+  sinpe
+  card
+  link
+}
+
+// ---------------------------------------------------------------------------
+// Modelos
+// ---------------------------------------------------------------------------
+
+model AdminUser {
+  id           String         @id @default(cuid())
+  name         String
+  email        String         @unique
+  passwordHash String
+  role         AdminRole      @default(admin)
+  createdAt    DateTime       @default(now())
+  auditLogs    AdminAuditLog[]
+}
+
+model SessionEvent {
+  id           String              @id @default(cuid())
+  title        String
+  slug         String              @unique
+  subtitle     String?
+  description   String              @db.Text
+  imageUrl     String?
+  date         DateTime
+  startTime    String // "16:00"
+  endTime      String // "20:00"
+  location     String
+  googleMapsUrl String?
+  wazeUrl      String?
+  minAge       Int?
+  status       EventStatus         @default(draft)
+  featured     Boolean             @default(false)
+  // Contenido enriquecido de la ficha (listas)
+  includes     String[]            @default([]) // qué incluye
+  bring        String[]            @default([]) // qué llevar
+  policies     String[]            @default([]) // políticas del evento
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  ticketTypes  SessionTicketType[]
+  orders       SessionOrder[]
+  tickets      SessionTicket[]
+
+  @@index([status])
+  @@index([slug])
+}
+
+model SessionTicketType {
+  id            String           @id @default(cuid())
+  eventId       String
+  event         SessionEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  price         Int // colones
+  quantityTotal Int
+  quantitySold  Int              @default(0)
+  maxPerOrder   Int              @default(10)
+  status        TicketTypeStatus @default(active)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  orderItems    SessionOrderItem[]
+  tickets       SessionTicket[]
+
+  @@index([eventId])
+}
+
+model SessionOrder {
+  id               String             @id @default(cuid())
+  code             String             @unique // código corto único para SINPE/comprobante
+  eventId          String
+  event            SessionEvent       @relation(fields: [eventId], references: [id])
+  customerName     String
+  customerEmail    String
+  customerPhone    String
+  customerIdNumber String?
+  status           OrderStatus        @default(pending)
+  paymentMethod    PaymentMethod      @default(simulated)
+  subtotal         Int                @default(0)
+  serviceFee       Int                @default(0)
+  total            Int                @default(0)
+  paymentReference String?
+  proofImageUrl    String? // comprobante SINPE
+  expiresAt        DateTime? // reserva temporal (10 min)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  items            SessionOrderItem[]
+  tickets          SessionTicket[]
+  payments         SessionPayment[]
+
+  @@index([eventId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model SessionOrderItem {
+  id           String            @id @default(cuid())
+  orderId      String
+  order        SessionOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ticketTypeId String
+  ticketType   SessionTicketType @relation(fields: [ticketTypeId], references: [id])
+  quantity     Int
+  unitPrice    Int
+  total        Int
+
+  @@index([orderId])
+}
+
+model SessionTicket {
+  id           String            @id @default(cuid())
+  orderId      String
+  order        SessionOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  eventId      String
+  event        SessionEvent      @relation(fields: [eventId], references: [id])
+  ticketTypeId String
+  ticketType   SessionTicketType @relation(fields: [ticketTypeId], references: [id])
+  qrCode       String            @unique // token opaco único
+  attendeeName String
+  status       TicketStatus      @default(valid)
+  usedAt       DateTime?
+  createdAt    DateTime          @default(now())
+
+  @@index([orderId])
+  @@index([eventId])
+  @@index([qrCode])
+}
+
+model SessionPayment {
+  id                    String       @id @default(cuid())
+  orderId               String
+  order                 SessionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider              String // "simulated" | "sinpe" | "<gateway>"
+  providerTransactionId String?
+  status                String // "succeeded" | "pending" | "failed"
+  amount                Int
+  currency              String       @default("CRC")
+  rawResponse           Json?
+  createdAt             DateTime     @default(now())
+
+  @@index([orderId])
+}
+
+model AdminAuditLog {
+  id          String     @id @default(cuid())
+  adminUserId String?
+  adminUser   AdminUser? @relation(fields: [adminUserId], references: [id])
+  action      String // "event.publish", "order.approve", "ticket.cancel", ...
+  entity      String
+  entityId    String?
+  meta        Json?
+  createdAt   DateTime   @default(now())
+
+  @@index([createdAt])
+}
