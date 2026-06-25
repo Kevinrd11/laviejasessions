@@ -6,6 +6,21 @@ export function normalizeCode(raw: string) {
   return (raw ?? "").toUpperCase().replace(/\s+/g, "");
 }
 
+const VALID_TYPES = ["courtesy", "discount"];
+
+/**
+ * Precio final por entrada al aplicar el código.
+ * - courtesy: gratis (₡0).
+ * - discount: precio fijo `value` (sin superar el precio original).
+ */
+export function finalPriceFor(
+  code: Pick<DiscountCode, "type" | "value">,
+  unitPrice: number,
+) {
+  if (code.type === "courtesy") return 0;
+  return Math.max(0, Math.min(code.value, unitPrice));
+}
+
 export type CourtesyValidation =
   | { ok: true; code: DiscountCode }
   | { ok: false; error: string };
@@ -22,7 +37,7 @@ export async function validateCourtesyCode(
   if (!code) return { ok: false, error: "Código inválido." };
 
   const dc = await db.discountCode.findUnique({ where: { code } });
-  if (!dc || dc.type !== "courtesy") return { ok: false, error: "Código inválido." };
+  if (!dc || !VALID_TYPES.includes(dc.type)) return { ok: false, error: "Código inválido." };
   if (dc.eventId !== eventId) {
     return { ok: false, error: "Este código no aplica para este evento." };
   }
@@ -51,7 +66,7 @@ export async function reserveCourtesyCode(
 ): Promise<DiscountCode> {
   const code = normalizeCode(rawCode);
   const dc = await tx.discountCode.findUnique({ where: { code } });
-  if (!dc || dc.type !== "courtesy") throw new Error("Código inválido.");
+  if (!dc || !VALID_TYPES.includes(dc.type)) throw new Error("Código inválido.");
   if (dc.eventId !== eventId) {
     throw new Error("Este código no aplica para este evento.");
   }

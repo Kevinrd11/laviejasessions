@@ -8,7 +8,7 @@ import {
   applyCourtesyToOrder,
   OrderError,
 } from "@/lib/services/orders";
-import { validateCourtesyCode } from "@/lib/services/courtesy";
+import { validateCourtesyCode, finalPriceFor } from "@/lib/services/courtesy";
 import { createOrderSchema, checkoutSchema } from "@/lib/validations";
 
 export type ActionState = { error?: string };
@@ -55,7 +55,13 @@ export async function applyCourtesyAction(input: {
   const res = await validateCourtesyCode(input.code, order.eventId);
   if (!res.ok) return { ok: false, error: res.error };
 
-  return { ok: true, original: order.subtotal, discount: order.subtotal, total: 0 };
+  const total = finalPriceFor(res.code, order.subtotal);
+  return {
+    ok: true,
+    original: order.subtotal,
+    discount: order.subtotal - total,
+    total,
+  };
 }
 
 /**
@@ -89,23 +95,31 @@ export async function confirmCheckoutAction(input: unknown): Promise<ActionState
   });
 
   const courtesy = (data.courtesyCode ?? "").trim();
+  let finalTotal = order.total;
+  let needsPayment = true;
+
   if (courtesy) {
-    // Aplicar cortesía: reserva el código y deja la orden en pending_courtesy.
+    // Aplicar el código: reserva atómica y ajusta el total.
+    // ₡0 → pending_courtesy (sin pago); > ₡0 → pending_payment (SINPE por el monto con descuento).
     try {
-      await applyCourtesyToOrder(order.id, courtesy);
+      const updated = await applyCourtesyToOrder(order.id, courtesy);
+      finalTotal = updated.total;
+      needsPayment = updated.status === "pending_payment";
     } catch (e) {
       if (e instanceof OrderError) return { error: e.message };
       console.error("applyCourtesy error", e);
-      return { error: "No se pudo aplicar el código de cortesía." };
+      return { error: "No se pudo aplicar el código de descuento." };
     }
-  } else {
+  }
+
+  if (needsPayment) {
     // Registrar intento de pago por SINPE (pendiente de validación manual).
     await db.sessionPayment.create({
       data: {
         orderId: order.id,
         provider: "sinpe",
         status: "pending",
-        amount: order.total,
+        amount: finalTotal,
         currency: "CRC",
       },
     });

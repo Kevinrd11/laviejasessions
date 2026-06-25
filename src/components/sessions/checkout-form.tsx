@@ -47,9 +47,11 @@ type Applied = { code: string; original: number; discount: number; total: number
 export function SessionCheckoutForm({
   orderId,
   orderCode,
+  orderTotal,
 }: {
   orderId: string;
   orderCode: string;
+  orderTotal: number;
 }) {
   const [method, setMethod] = useState<Method>("sinpe");
   const [accept, setAccept] = useState(false);
@@ -62,7 +64,9 @@ export function SessionCheckoutForm({
   const [courtesyError, setCourtesyError] = useState<string | null>(null);
   const [applying, startApplying] = useTransition();
 
-  const isCourtesy = applied !== null;
+  const isApplied = applied !== null;
+  const isFree = applied?.total === 0; // ₡0 = cortesía (sin pago)
+  const payable = applied ? applied.total : orderTotal;
 
   function applyCode() {
     setCourtesyError(null);
@@ -128,10 +132,10 @@ export function SessionCheckoutForm({
       {/* Código de cortesía */}
       <fieldset className="space-y-3" disabled={pending}>
         <legend className="mb-1 flex items-center gap-2 font-display text-lg font-semibold">
-          <Gift className="size-5 text-gold-soft" /> ¿Tenés un código de cortesía?
+          <Gift className="size-5 text-gold-soft" /> ¿Tenés un código de descuento?
         </legend>
 
-        {!isCourtesy ? (
+        {!isApplied ? (
           <>
             <div className="flex gap-2">
               <input
@@ -161,7 +165,7 @@ export function SessionCheckoutForm({
           <div className="space-y-3 rounded-2xl border border-emerald/30 bg-emerald/10 p-4">
             <div className="flex items-center justify-between">
               <p className="flex items-center gap-2 text-sm font-semibold text-emerald-soft">
-                <Check className="size-4" /> Código de cortesía aplicado correctamente.
+                <Check className="size-4" /> Código de descuento aplicado correctamente.
               </p>
               <button
                 type="button"
@@ -173,7 +177,7 @@ export function SessionCheckoutForm({
             </div>
             <div className="space-y-1 text-sm">
               <Row label="Precio original" value={formatColones(applied!.original)} />
-              <Row label={`Cortesía (${applied!.code})`} value={`-${formatColones(applied!.discount)}`} tone="text-emerald-soft" />
+              <Row label={`Descuento (${applied!.code})`} value={`-${formatColones(applied!.discount)}`} tone="text-emerald-soft" />
               <div className="flex justify-between border-t border-white/10 pt-1.5 text-base font-bold">
                 <span>Total a pagar</span>
                 <span className="text-gold-soft">{formatColones(applied!.total)}</span>
@@ -183,8 +187,8 @@ export function SessionCheckoutForm({
         )}
       </fieldset>
 
-      {/* Método de pago (solo si NO es cortesía) */}
-      {!isCourtesy && (
+      {/* Método de pago (oculto si la entrada queda en ₡0) */}
+      {!isFree && (
         <fieldset className="space-y-3" disabled={pending}>
           <legend className="mb-2 font-display text-lg font-semibold">Método de pago</legend>
           {methods.map((m) => {
@@ -239,7 +243,9 @@ export function SessionCheckoutForm({
               <p className="font-medium text-foreground">Instrucciones SINPE Móvil</p>
               <ol className="list-decimal space-y-1.5 pl-4">
                 <li>
-                  Transfiere el total por SINPE Móvil al{" "}
+                  Transfiere{" "}
+                  <strong className="text-foreground">{formatColones(payable)}</strong> por
+                  SINPE Móvil al{" "}
                   <strong className="text-emerald-soft">{brand.sinpeDisplay}</strong> ({brand.company}).
                 </li>
                 <li>
@@ -294,14 +300,14 @@ export function SessionCheckoutForm({
           <>
             <Loader2 className="size-5 animate-spin" /> Procesando…
           </>
-        ) : isCourtesy ? (
+        ) : isFree ? (
           "Registrar entrada de cortesía"
         ) : (
           "Registrar solicitud"
         )}
       </button>
       <p className="text-center text-xs text-muted">
-        {isCourtesy
+        {isFree
           ? "La organización validará tu cortesía y confirmará tu entrada."
           : "Tus entradas se confirman únicamente después de validar el pago por SINPE."}
       </p>

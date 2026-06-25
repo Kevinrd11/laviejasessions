@@ -6,6 +6,7 @@ import {
   reserveCourtesyCode,
   releaseCourtesyReservation,
   consumeCourtesyCode,
+  finalPriceFor,
 } from "@/lib/services/courtesy";
 import type { CreateOrderInput } from "@/lib/validations";
 
@@ -242,6 +243,15 @@ export async function confirmPayment(
       order.items,
       "No se puede confirmar esta orden porque no quedan suficientes entradas para el evento.",
     );
+
+    // Si la orden usó un código de descuento, consumirlo definitivamente.
+    if (order.discountCodeId) {
+      await consumeCourtesyCode(tx, order.discountCodeId, {
+        name: order.customerName,
+        phone: order.customerPhone,
+      });
+    }
+
     await issueTickets(tx, order, order.items);
 
     return tx.sessionOrder.update({
@@ -277,10 +287,11 @@ export async function cancelOrder(orderId: string) {
     }
 
     if (order.discountCodeId) {
-      if (order.status === "pending_courtesy") {
+      if (order.status === "pending_courtesy" || order.status === "pending_payment") {
+        // Aún no se había consumido: liberar la reserva del código.
         await releaseCourtesyReservation(tx, order.discountCodeId);
-      } else if (order.status === "courtesy_approved") {
-        // Restituir el uso del código para que pueda volver a usarse.
+      } else if (order.status === "courtesy_approved" || order.status === "paid") {
+        // Ya estaba consumido: restituir el uso para que pueda volver a usarse.
         await tx.discountCode.updateMany({
           where: { id: order.discountCodeId, usedCount: { gt: 0 } },
           data: { usedCount: { decrement: 1 } },
@@ -323,13 +334,18 @@ export async function applyCourtesyToOrder(orderId: string, rawCode: string) {
       throw new OrderError(e instanceof Error ? e.message : "Código inválido.");
     }
 
+    // Precio final con el código. ₡0 → cortesía (aprobación manual);
+    // > ₡0 → descuento (sigue el flujo de pago por SINPE).
+    const finalTotal = finalPriceFor(code, order.subtotal);
+    const isFree = finalTotal <= 0;
+
     return tx.sessionOrder.update({
       where: { id: order.id },
       data: {
-        status: "pending_courtesy",
+        status: isFree ? "pending_courtesy" : "pending_payment",
         discountCodeId: code.id,
-        discountTotal: order.subtotal,
-        total: 0,
+        discountTotal: order.subtotal - finalTotal,
+        total: finalTotal,
         expiresAt: new Date(Date.now() + ORDER_EXPIRY_HOURS * 60 * 60 * 1000),
       },
     });

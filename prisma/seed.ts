@@ -82,7 +82,7 @@ async function main() {
           {
             name: "Preventa",
             description: "Cupo limitado a 35 entradas. Precio especial por tiempo limitado.",
-            price: 8000,
+            price: 5000,
             quantityTotal: 35,
             maxPerOrder: 6,
             unlimited: false,
@@ -91,7 +91,7 @@ async function main() {
           {
             name: "Entrada Día del Evento",
             description: "Disponible únicamente el día del evento, sujeto a disponibilidad en puerta.",
-            price: 12000,
+            price: 7000,
             quantityTotal: 0,
             maxPerOrder: 8,
             unlimited: true,
@@ -104,18 +104,19 @@ async function main() {
     },
   });
 
-  // 10 códigos de cortesía para el Sunset (1 entrada gratis, 1 solo uso c/u).
+  // 10 códigos de descuento para el Sunset: dejan la entrada en ₡3.000
+  // (precio final fijo), 1 solo uso c/u.
   await db.discountCode.createMany({
     data: Array.from({ length: 10 }, (_, i) => ({
       code: `CORTESIA-${String(i + 1).padStart(3, "0")}`,
       eventId: sunset.id,
-      type: "courtesy",
-      value: 100,
+      type: "discount",
+      value: 3000, // precio final por entrada con el código
       maxUses: 1,
       isActive: true,
     })),
   });
-  console.log("🎟️  10 códigos de cortesía creados (CORTESIA-001..010).");
+  console.log("🎟️  10 códigos de descuento creados (CORTESIA-001..010 → ₡3.000).");
 
   // --- 2. Night Session Bosque Vivo ---
   await db.sessionEvent.create({

@@ -87,7 +87,7 @@ export default async function AdminSessionsPage() {
             {ev.codes.length > 0 && (
               <div className="mt-8">
                 <h3 className="mb-3 flex items-center gap-2 font-display text-lg font-semibold">
-                  <Gift className="size-5 text-gold-soft" /> Códigos de cortesía
+                  <Gift className="size-5 text-gold-soft" /> Códigos de descuento (₡3.000)
                 </h3>
                 <CourtesyCodes codes={ev.codes} />
               </div>

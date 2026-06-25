@@ -57,7 +57,11 @@ export default async function CheckoutPage({
         {/* Formulario */}
         <div className="order-2 lg:order-1">
           <div className="rounded-3xl glass-strong p-6 sm:p-8">
-            <SessionCheckoutForm orderId={order.id} orderCode={order.code} />
+            <SessionCheckoutForm
+              orderId={order.id}
+              orderCode={order.code}
+              orderTotal={order.total}
+            />
           </div>
         </div>
 
